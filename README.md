@@ -7,12 +7,15 @@ and restores your window layout.
 
 - Auto-saves session every 5 minutes (configurable)
 - Restores windows to their workspaces on startup
-- Preserves workspace names, indices, and outputs
-- Skip apps from being restored
+- Preserves workspace names, indices, outputs, and window sizes
+- Map `app_id` to custom launch commands
+- Skip specific apps from being restored
 
 ## Installation
 
 ### NixOS + Home Manager
+
+Add nirinit to your flake inputs:
 
 ```nix
 {
@@ -20,18 +23,43 @@ and restores your window layout.
     url = "github:amaanq/nirinit";
     inputs.nixpkgs.follows = "nixpkgs";
   };
-
-  # In your NixOS configuration:
-  imports = [ nirinit.nixosModules.nirinit ];
-
-  services.nirinit.enable = true;
-
-  # In your Home Manager configuration:
-  imports = [ nirinit.homeModules.nirinit ];
-
-  services.nirinit.settings.skip.apps = [ "discord" "firefox" ];
 }
 ```
+
+Import the NixOS module and configure:
+
+```nix
+# configuration.nix
+{ inputs, ... }:
+{
+  imports = [ inputs.nirinit.nixosModules.nirinit ];
+
+  services.nirinit = {
+    enable = true;
+    settings = {
+      # Map app_id to launch command (useful for PWAs, flatpaks, etc.)
+      launch = {
+        "chromium-example.com__-Default" = "example-web-app";
+      };
+      # Apps to skip during restore
+      skip.apps = [ "steam" ];
+    };
+  };
+}
+```
+
+Import the Home Manager module to generate the config file:
+
+```nix
+# home.nix
+{ inputs, ... }:
+{
+  imports = [ inputs.nirinit.homeModules.nirinit ];
+}
+```
+
+Note: Settings are defined in the NixOS module. The Home Manager module reads
+from `osConfig` and generates `$XDG_CONFIG_HOME/nirinit/config.toml`.
 
 ### Manual
 
@@ -44,21 +72,25 @@ nirinit --save-interval 300
 
 ## Configuration
 
-The config file is located at : `$XDG_CONFIG_HOME/nirinit/config.toml`
-(for most users this would be `~/.config/nirinit/config.toml`)
+The config file is located at `$XDG_CONFIG_HOME/nirinit/config.toml`
+(typically `~/.config/nirinit/config.toml`).
 
 ```toml
 [skip]
-apps = ["discord", "slack"]
+apps = ["steam"]
+
+[launch]
+# Map app_id to the actual command to spawn
+"chromium-example.com__-Default" = "example-web-app"
 ```
 
-## Session file
+## Session File
 
 The session file is located at `$XDG_DATA_HOME/nirinit/session.json`
-(again, for most users this would be `~/.local/share/nirinit/session.json`)
+(typically `~/.local/share/nirinit/session.json`).
 
-Normally, you shouldn't need to touch this, but if you notice something odd happening
-when your session is being restored, deleting this file might help.
+You shouldn't need to touch this. However, if session restore is acting up,
+deleting it is a safe way to start fresh and might fix issues.
 
 ## License
 
