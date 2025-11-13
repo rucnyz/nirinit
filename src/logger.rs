@@ -1,7 +1,20 @@
-use std::io::{self, Write as _};
+use std::io::{
+   self,
+   Write as _,
+};
 
-use anstyle::{AnsiColor, Color, Style};
-use log::{Level, LevelFilter, Log, Metadata, Record};
+use anstyle::{
+   AnsiColor,
+   Color,
+   Style,
+};
+use log::{
+   Level,
+   LevelFilter,
+   Log,
+   Metadata,
+   Record,
+};
 
 pub fn paint(color: Option<impl Into<Color>>, text: &str) -> String {
    let style = Style::new().fg_color(color.map(Into::into));
@@ -17,31 +30,41 @@ impl Log for Logger {
 
    fn log(&self, record: &Record) {
       match record.level() {
-         Level::Error => eprintln!(
-            "{} {}",
-            paint(Some(AnsiColor::Red), "Error:"),
-            record.args()
-         ),
-         Level::Warn => eprintln!(
-            "{} {}",
-            paint(Some(AnsiColor::Yellow), "Warning:"),
-            record.args()
-         ),
-         Level::Info => eprintln!(
-            "{} {}",
-            paint(Some(AnsiColor::Green), "Info:"),
-            record.args()
-         ),
-         Level::Debug => eprintln!(
-            "{} {}",
-            paint(Some(AnsiColor::Blue), "Debug:"),
-            record.args()
-         ),
-         Level::Trace => eprintln!(
-            "[{}] {}",
-            record.module_path().unwrap_or_default(),
-            record.args()
-         ),
+         Level::Error => {
+            eprintln!(
+               "{} {}",
+               paint(Some(AnsiColor::Red), "Error:"),
+               record.args()
+            );
+         },
+         Level::Warn => {
+            eprintln!(
+               "{} {}",
+               paint(Some(AnsiColor::Yellow), "Warning:"),
+               record.args()
+            );
+         },
+         Level::Info => {
+            eprintln!(
+               "{} {}",
+               paint(Some(AnsiColor::Green), "Info:"),
+               record.args()
+            );
+         },
+         Level::Debug => {
+            eprintln!(
+               "{} {}",
+               paint(Some(AnsiColor::Blue), "Debug:"),
+               record.args()
+            );
+         },
+         Level::Trace => {
+            eprintln!(
+               "[{}] {}",
+               record.module_path().unwrap_or_default(),
+               record.args()
+            );
+         },
       }
    }
 

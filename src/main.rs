@@ -1,23 +1,63 @@
-use anstyle::{AnsiColor, Color, Style};
-use clap::{Parser, builder, crate_authors};
-use color_eyre::eyre;
-use eyre::{Context as _, OptionExt as _};
-use log::{debug, error, info, warn};
-use niri_ipc::{
-   Action, Reply, Request, Response, Window, Workspace, WorkspaceReferenceArg, socket::Socket,
-};
-use serde::{Deserialize, Serialize};
-use signal_hook::{consts::TERM_SIGNALS, flag};
 use std::{
    collections::HashMap,
-   fs, io,
-   path::{Path, PathBuf},
+   fs,
+   io,
+   path::{
+      Path,
+      PathBuf,
+   },
    sync::{
       Arc,
-      atomic::{AtomicBool, Ordering},
+      atomic::{
+         AtomicBool,
+         Ordering,
+      },
    },
    thread,
-   time::{Duration, Instant},
+   time::{
+      Duration,
+      Instant,
+   },
+};
+
+use anstyle::{
+   AnsiColor,
+   Color,
+   Style,
+};
+use clap::{
+   Parser,
+   builder,
+   crate_authors,
+};
+use color_eyre::eyre;
+use eyre::{
+   Context as _,
+   OptionExt as _,
+};
+use log::{
+   debug,
+   error,
+   info,
+   warn,
+};
+use niri_ipc::{
+   Action,
+   Reply,
+   Request,
+   Response,
+   Window,
+   Workspace,
+   WorkspaceReferenceArg,
+   socket::Socket,
+};
+use serde::{
+   Deserialize,
+   Serialize,
+};
+use signal_hook::{
+   consts::TERM_SIGNALS,
+   flag,
 };
 use thiserror::Error;
 
@@ -42,27 +82,29 @@ type NiriResult<T> = Result<T, NiriError>;
 /// Window data for session persistence (excludes title field)
 #[derive(Serialize, Deserialize, Debug)]
 struct SessionWindow<'niri> {
-   id: u64,
+   id:               u64,
    /// The application id of the window, see <https://wayland-book.com/xdg-shell-basics/xdg-toplevel.html>
-   app_id: Option<String>,
-   /// The launch command to spawn this window (mapped from `app_id` via config, otherwise `app_id` if no mapping exists)
-   launch_command: Option<String>,
+   app_id:           Option<String>,
+   /// The launch command to spawn this window (mapped from `app_id` via config,
+   /// otherwise `app_id` if no mapping exists)
+   launch_command:   Option<String>,
    /// Index of the workspace on the corresponding monitor
-   workspace_idx: Option<u8>,
+   workspace_idx:    Option<u8>,
    /// Name of the workspace, in case of a named workspace
-   workspace_name: Option<&'niri str>,
+   workspace_name:   Option<&'niri str>,
    /// Output the workspace is on
    workspace_output: Option<&'niri str>,
    /// Whether the window is focused or not
-   is_focused: bool,
+   is_focused:       bool,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
    #[serde(default)]
-   skip: Skip,
-   /// Map `app_id` to actual launch command (e.g., "thorium-discord.com__app-Default" -> "discord-web-app")
+   skip:   Skip,
+   /// Map `app_id` to actual launch command (e.g.,
+   /// "thorium-discord.com__app-Default" -> "discord-web-app")
    #[serde(default)]
    launch: HashMap<String, String>,
 }
@@ -119,9 +161,11 @@ fn niri_windows() -> NiriResult<Vec<Window>> {
       .map_err(NiriError::Reply)?
    {
       Response::Windows(windows) => Ok(windows),
-      other => Err(NiriError::Reply(format!(
-         "Unexpected response from Niri: {other:?}"
-      ))),
+      other => {
+         Err(NiriError::Reply(format!(
+            "Unexpected response from Niri: {other:?}"
+         )))
+      },
    }
 }
 
@@ -133,9 +177,11 @@ fn niri_workspaces() -> NiriResult<Vec<Workspace>> {
       .map_err(NiriError::Reply)?
    {
       Response::Workspaces(workspaces) => Ok(workspaces),
-      other => Err(NiriError::Reply(format!(
-         "Unexpected response from Niri: {other:?}"
-      ))),
+      other => {
+         Err(NiriError::Reply(format!(
+            "Unexpected response from Niri: {other:?}"
+         )))
+      },
    }
 }
 
@@ -250,7 +296,7 @@ fn spawn_and_move_window<'niri>(
 
       if let Some(output) = workspace_output
          && let Err(err) = socket.send(Request::Action(Action::MoveWindowToMonitor {
-            id: Some(new_window.id),
+            id:     Some(new_window.id),
             output: output.to_owned(),
          }))
       {
@@ -269,7 +315,7 @@ fn spawn_and_move_window<'niri>(
          .send(Request::Action(Action::MoveWindowToWorkspace {
             window_id: Some(new_window.id),
             reference: workspace_reference,
-            focus: false,
+            focus:     false,
          }))
          .map_err(NiriError::Send)?
          .map_err(NiriError::Reply)?;
@@ -299,7 +345,8 @@ fn restore_session(config: &Config, session_path: &Path) -> eyre::Result<()> {
    let windows = serde_json::from_str::<Vec<SessionWindow>>(&session_data)
       .wrap_err("Failed to load session data")?;
 
-   // Sort windows by workspace index to ensure lower-indexed workspaces get created first
+   // Sort windows by workspace index to ensure lower-indexed workspaces get
+   // created first
    let mut sorted_windows = windows;
    sorted_windows.sort_by_key(|w| (w.workspace_output, w.workspace_idx));
 
