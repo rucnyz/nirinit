@@ -3,6 +3,10 @@
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
+    fenix = {
+      url = "github:nix-community/fenix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -122,21 +126,26 @@
           default = self.packages.${pkgs.system}.nirinit;
         }
       );
-
-      devShells = eachSystem (pkgs: {
-        default = pkgs.mkShell {
-          packages = builtins.attrValues {
-            inherit (pkgs)
-              cargo
-              clippy
-              rustc
-              rust-analyzer
-              rustfmt
-
-              nixfmt-rfc-style
-              ;
+      devShells = eachSystem (
+        pkgs:
+        let
+          fenixPkgs = inputs.fenix.packages.${pkgs.system};
+        in
+        {
+          default = pkgs.mkShell {
+            packages = [
+              pkgs.nixfmt-rfc-style
+              (fenixPkgs.complete.withComponents [
+                "cargo"
+                "clippy"
+                "rust-src"
+                "rustc"
+                "rustfmt"
+                "rust-analyzer"
+              ])
+            ];
           };
-        };
-      });
+        }
+      );
     };
 }
