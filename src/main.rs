@@ -46,6 +46,7 @@ use niri_ipc::{
    Reply,
    Request,
    Response,
+   SizeChange,
    Window,
    Workspace,
    WorkspaceReferenceArg,
@@ -96,6 +97,10 @@ struct SessionWindow<'niri> {
    workspace_output: Option<&'niri str>,
    /// Whether the window is focused or not
    is_focused:       bool,
+   /// Window size (width, height) in logical pixels
+   /// TODO: Remove [`Option`] in a month
+   #[serde(default)]
+   window_size:      Option<(i32, i32)>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -243,6 +248,7 @@ fn save_session(file_path: &Path, config: &Config) -> eyre::Result<()> {
             workspace_name: workspace.and_then(|w| w.name.as_deref()),
             workspace_output: workspace.and_then(|w| w.output.as_deref()),
             is_focused: window.is_focused,
+            window_size: Some(window.layout.window_size),
          }
       })
       .collect::<Vec<_>>();
@@ -262,6 +268,7 @@ fn spawn_and_move_window<'niri>(
    workspace_idx: Option<u8>,
    workspace_name: Option<&'niri str>,
    workspace_output: Option<&'niri str>,
+   window_size: Option<(i32, i32)>,
 ) -> eyre::Result<()> {
    let command = vec![launch_command.to_owned()];
 
@@ -320,6 +327,28 @@ fn spawn_and_move_window<'niri>(
          .map_err(NiriError::Send)?
          .map_err(NiriError::Reply)?;
 
+      if let Some((width, height)) = window_size {
+         if let Err(err) = socket.send(Request::Action(Action::SetWindowWidth {
+            id:     Some(new_window.id),
+            change: SizeChange::SetFixed(width),
+         })) {
+            warn!(
+               "failed to restore window width for {}: {err}",
+               new_window.app_id.as_deref().unwrap_or("unknown")
+            );
+         }
+
+         if let Err(err) = socket.send(Request::Action(Action::SetWindowHeight {
+            id:     Some(new_window.id),
+            change: SizeChange::SetFixed(height),
+         })) {
+            warn!(
+               "failed to restore window height for {}: {err}",
+               new_window.app_id.as_deref().unwrap_or("unknown")
+            );
+         }
+      }
+
       return Ok(());
    }
 
@@ -365,6 +394,7 @@ fn restore_session(config: &Config, session_path: &Path) -> eyre::Result<()> {
                window.workspace_idx,
                window.workspace_name,
                window.workspace_output,
+               window.window_size,
             )?;
          }
       }
