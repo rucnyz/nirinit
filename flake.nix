@@ -38,7 +38,7 @@
             options = {
               services.nirinit = {
                 enable = mkEnableOption "Nirinit";
-                package = mkPackageOption self.packages.${pkgs.system} "nirinit" { };
+                package = mkPackageOption self.packages.${pkgs.stdenv.hostPlatform.system} "nirinit" { };
                 settings = lib.mkOption {
                   type = lib.types.submodule {
                     freeformType = (pkgs.formats.toml { }).type;
@@ -123,13 +123,13 @@
             meta.mainProgram = packageName;
           };
 
-          default = self.packages.${pkgs.system}.nirinit;
+          default = self.packages.${pkgs.stdenv.hostPlatform.system}.nirinit;
         }
       );
       devShells = eachSystem (
         pkgs:
         let
-          fenixPkgs = inputs.fenix.packages.${pkgs.system};
+          fenixPkgs = inputs.fenix.packages.${pkgs.stdenv.hostPlatform.system};
         in
         {
           default = pkgs.mkShell {
