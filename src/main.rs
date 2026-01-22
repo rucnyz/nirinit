@@ -80,12 +80,15 @@ pub enum NiriError {
 
 type NiriResult<T> = Result<T, NiriError>;
 
-/// Window data for session persistence (excludes title field)
+/// Window data for session persistence
 #[derive(Serialize, Deserialize)]
 struct SessionWindow<'niri> {
    id:               u64,
    /// The application id of the window, see <https://wayland-book.com/xdg-shell-basics/xdg-toplevel.html>
    app_id:           Option<String>,
+   /// The window title (used for extracting project paths for IDEs like PyCharm)
+   #[serde(default)]
+   title:            Option<String>,
    /// The launch command to spawn this window (mapped from `app_id` via config,
    /// otherwise `app_id` if no mapping exists)
    launch_command:   Option<String>,
@@ -243,6 +246,7 @@ fn save_session(file_path: &Path, config: &Config) -> eyre::Result<()> {
          SessionWindow {
             id: window.id,
             app_id: window.app_id,
+            title: window.title,
             launch_command,
             workspace_idx: workspace.map(|w| w.idx),
             workspace_name: workspace.and_then(|w| w.name.as_deref()),
@@ -262,15 +266,49 @@ fn save_session(file_path: &Path, config: &Config) -> eyre::Result<()> {
    Ok(())
 }
 
+/// Extract project path from JetBrains IDE window title
+/// Title format: "project_name [/path/to/project] – filename" or "project_name [~/path/to/project] – filename"
+fn extract_jetbrains_project_path(title: &str) -> Option<String> {
+   // Find the path between square brackets
+   let start = title.find('[')?;
+   let end = title.find(']')?;
+   if start >= end {
+      return None;
+   }
+   let path = &title[start + 1..end];
+   // Expand ~ to home directory
+   if path.starts_with('~') {
+      dirs::home_dir()
+         .map(|home| path.replacen('~', home.to_str().unwrap_or(""), 1))
+   } else {
+      Some(path.to_string())
+   }
+}
+
 fn spawn_and_move_window<'niri>(
    launch_command: &str,
    app_id: &str,
+   title: Option<&str>,
    workspace_idx: Option<u8>,
    workspace_name: Option<&'niri str>,
    workspace_output: Option<&'niri str>,
    window_size: Option<(i32, i32)>,
 ) -> eyre::Result<()> {
-   let command = vec![launch_command.to_owned()];
+   // For JetBrains IDEs, try to extract project path from title
+   let command = if app_id.starts_with("jetbrains-") {
+      if let Some(title) = title {
+         if let Some(project_path) = extract_jetbrains_project_path(title) {
+            debug!("extracted project path for {app_id}: {project_path}");
+            vec![launch_command.to_owned(), project_path]
+         } else {
+            vec![launch_command.to_owned()]
+         }
+      } else {
+         vec![launch_command.to_owned()]
+      }
+   } else {
+      vec![launch_command.to_owned()]
+   };
 
    let mut socket = Socket::connect().wrap_err("Failed to connect to Niri IPC socket")?;
 
@@ -391,6 +429,7 @@ fn restore_session(config: &Config, session_path: &Path) -> eyre::Result<()> {
             spawn_and_move_window(
                launch_command,
                app_id,
+               window.title.as_deref(),
                window.workspace_idx,
                window.workspace_name,
                window.workspace_output,
