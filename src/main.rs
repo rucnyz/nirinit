@@ -698,6 +698,37 @@ fn restore_session(config: &Config, session_path: &Path) -> eyre::Result<()> {
       (w.workspace_output, w.workspace_idx, col, tile)
    });
 
+   // Trigger tmux-resurrect restore BEFORE spawning kitty terminals.
+   // This ensures tmux sessions exist when kitty tries to attach to them.
+   // The resurrect script restores all saved sessions with their original names.
+   let resurrect_script = dirs::home_dir()
+      .map(|h| h.join(".tmux/plugins/tmux-resurrect/scripts/restore.sh"));
+   if let Some(script) = resurrect_script {
+      if script.exists() {
+         info!("triggering tmux-resurrect restore...");
+         match std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+               "tmux start-server && {} 2>/dev/null",
+               script.display()
+            ))
+            .status()
+         {
+            Ok(status) if status.success() => {
+               info!("tmux sessions restored successfully");
+               // Give tmux a moment to fully initialize sessions
+               thread::sleep(Duration::from_millis(500));
+            },
+            Ok(status) => {
+               warn!("tmux-resurrect restore exited with status: {}", status);
+            },
+            Err(err) => {
+               warn!("failed to run tmux-resurrect restore: {}", err);
+            },
+         }
+      }
+   }
+
    // Collect workspace names (deduplicated) and set them BEFORE spawning windows.
    // This ensures workspaces exist when we try to move windows to them by name.
    let mut workspace_names_to_set: std::collections::HashMap<(Option<&str>, Option<u8>), &str> =
