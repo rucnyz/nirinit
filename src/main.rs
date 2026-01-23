@@ -829,8 +829,16 @@ fn main() -> eyre::Result<()> {
          info!("received SIGUSR1, saving session...");
          if let Err(report) = save_session(&session_path, &config) {
             error!("failed to save session: {report}");
+            // Send failure notification
+            let _ = std::process::Command::new("notify-send")
+               .args(["-t", "3000", "-a", "nirinit", "nirinit", "❌ 保存失败"])
+               .spawn();
          } else {
             info!("session saved successfully");
+            // Send success notification
+            let _ = std::process::Command::new("notify-send")
+               .args(["-t", "2000", "-a", "nirinit", "nirinit", "✅ Session 已保存"])
+               .spawn();
          }
          last_save = Instant::now();
       }
