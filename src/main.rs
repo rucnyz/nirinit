@@ -498,8 +498,8 @@ fn spawn_and_move_window<'niri>(
 
             if is_local {
                // Local tmux session
-               // Wait for session to exist (tmux-resurrect may still be restoring),
-               // then attach. If timeout, fall back to choose-tree.
+               // tmux server is started at niri startup, tmux-continuum auto-restores sessions.
+               // Just wait for the session to appear and attach.
                debug!("found local tmux session: {}", tmux_info.session);
                vec![
                   launch_command.to_owned(),
@@ -507,9 +507,9 @@ fn spawn_and_move_window<'niri>(
                   "sh".to_owned(),
                   "-c".to_owned(),
                   format!(
-                     "for i in $(seq 1 20); do tmux has-session -t {} 2>/dev/null && break; sleep 0.5; done; \
-                      tmux attach -t {} || tmux new-session \\; choose-tree -s",
-                     tmux_info.session, tmux_info.session
+                     "for i in $(seq 1 30); do tmux has-session -t {0} 2>/dev/null && break; sleep 0.5; done; \
+                      tmux attach -t {0} || tmux new-session \\; choose-tree -s",
+                     tmux_info.session
                   ),
                ]
             } else {
@@ -698,43 +698,10 @@ fn restore_session(config: &Config, session_path: &Path) -> eyre::Result<()> {
       (w.workspace_output, w.workspace_idx, col, tile)
    });
 
-   // Trigger tmux-resurrect restore BEFORE spawning kitty terminals.
-   // This ensures tmux sessions exist when kitty tries to attach to them.
-   // The resurrect script restores all saved sessions with their original names.
-   let resurrect_script = dirs::home_dir()
-      .map(|h| h.join(".tmux/plugins/tmux-resurrect/scripts/restore.sh"));
-   if let Some(ref script) = resurrect_script {
-      if script.exists() {
-         info!("triggering tmux-resurrect restore...");
-         // Add ~/.local/bin to PATH for the hostname command (needed by resurrect script)
-         let home = dirs::home_dir().unwrap_or_default();
-         let local_bin = home.join(".local/bin");
-         let current_path = std::env::var("PATH").unwrap_or_default();
-         let new_path = format!("{}:{}", local_bin.display(), current_path);
-
-         match std::process::Command::new("sh")
-            .arg("-c")
-            .arg(format!(
-               "tmux start-server && {}",
-               script.display()
-            ))
-            .env("PATH", &new_path)
-            .status()
-         {
-            Ok(status) if status.success() => {
-               info!("tmux sessions restored successfully");
-               // Give tmux a moment to fully initialize sessions
-               thread::sleep(Duration::from_millis(500));
-            },
-            Ok(status) => {
-               warn!("tmux-resurrect restore exited with status: {}", status);
-            },
-            Err(err) => {
-               warn!("failed to run tmux-resurrect restore: {}", err);
-            },
-         }
-      }
-   }
+   // NOTE: We do NOT manually trigger tmux-resurrect restore here.
+   // Instead, we rely on tmux-continuum (@continuum-restore 'on') to automatically
+   // restore sessions when the tmux server starts. The first kitty terminal will
+   // start the tmux server, and continuum will handle the restoration.
 
    // Collect workspace names (deduplicated) and set them BEFORE spawning windows.
    // This ensures workspaces exist when we try to move windows to them by name.
