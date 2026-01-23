@@ -644,12 +644,22 @@ fn restore_session(config: &Config, session_path: &Path) -> eyre::Result<()> {
    let windows = serde_json::from_str::<Vec<SessionWindow>>(&session_data)
       .wrap_err("Failed to load session data")?;
 
-   // Sort windows by workspace index to ensure lower-indexed workspaces get
-   // created first
-   let mut sorted_windows = windows;
-   sorted_windows.sort_by_key(|w| (w.workspace_output, w.workspace_idx));
+   // Add original index to each window for preserving order within workspaces.
+   // The session file stores windows in their visual order (left-to-right in niri),
+   // so we need to maintain this order when restoring.
+   let mut indexed_windows: Vec<(usize, SessionWindow)> = windows
+      .into_iter()
+      .enumerate()
+      .collect();
 
-   for window in sorted_windows {
+   // Sort windows by (workspace_output, workspace_idx, original_index).
+   // This ensures:
+   // 1. Workspaces on lower-indexed outputs are created first
+   // 2. Lower-indexed workspaces are created first
+   // 3. Windows within each workspace maintain their original left-to-right order
+   indexed_windows.sort_by_key(|(idx, w)| (w.workspace_output, w.workspace_idx, *idx));
+
+   for (_original_idx, window) in indexed_windows {
       // Check if the launch command should be skipped
       if let Some(ref launch_command) = window.launch_command {
          if config.skip.apps.contains(launch_command) {
