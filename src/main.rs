@@ -487,18 +487,21 @@ fn spawn_and_move_window<'niri>(
 
             if is_local {
                // Local tmux session
+               // Use `new-session -A` to attach if exists, create if not
+               // This handles the case where tmux-resurrect hasn't restored yet
                debug!("found local tmux session: {}", tmux_info.session);
                vec![
                   launch_command.to_owned(),
                   "-e".to_owned(),
                   "tmux".to_owned(),
-                  "attach".to_owned(),
-                  "-t".to_owned(),
+                  "new-session".to_owned(),
+                  "-A".to_owned(),
+                  "-s".to_owned(),
                   tmux_info.session,
                ]
             } else {
                // Remote tmux session via SSH
-               // Command: kitty -e ssh hostname -t tmux attach -t session
+               // Use `new-session -A` for same reason
                debug!(
                   "found remote tmux session: {} on host {}",
                   tmux_info.session, tmux_info.hostname
@@ -509,7 +512,7 @@ fn spawn_and_move_window<'niri>(
                   "ssh".to_owned(),
                   tmux_info.hostname,
                   "-t".to_owned(),
-                  format!("tmux attach -t {}", tmux_info.session),
+                  format!("tmux new-session -A -s {}", tmux_info.session),
                ]
             }
          } else {
