@@ -285,6 +285,22 @@ fn extract_jetbrains_project_path(title: &str) -> Option<String> {
    }
 }
 
+/// Get Edge workspace ID from workspace name by reading the WorkspacesCache file
+fn get_edge_workspace_id(workspace_name: &str) -> Option<String> {
+   let cache_path = dirs::config_dir()?
+      .join("microsoft-edge/Default/Workspaces/WorkspacesCache");
+
+   let cache_content = fs::read_to_string(&cache_path).ok()?;
+   let cache: serde_json::Value = serde_json::from_str(&cache_content).ok()?;
+
+   cache["workspaces"]
+      .as_array()?
+      .iter()
+      .find(|ws| ws["name"].as_str() == Some(workspace_name))
+      .and_then(|ws| ws["id"].as_str())
+      .map(|id| id.to_string())
+}
+
 fn spawn_and_move_window<'niri>(
    launch_command: &str,
    app_id: &str,
@@ -294,13 +310,30 @@ fn spawn_and_move_window<'niri>(
    workspace_output: Option<&'niri str>,
    window_size: Option<(i32, i32)>,
 ) -> eyre::Result<()> {
-   // For JetBrains IDEs, try to extract project path from title
+   // Build command based on app type
    let command = if app_id.starts_with("jetbrains-") {
+      // For JetBrains IDEs, try to extract project path from title
       if let Some(title) = title {
          if let Some(project_path) = extract_jetbrains_project_path(title) {
             debug!("extracted project path for {app_id}: {project_path}");
             vec![launch_command.to_owned(), project_path]
          } else {
+            vec![launch_command.to_owned()]
+         }
+      } else {
+         vec![launch_command.to_owned()]
+      }
+   } else if app_id == "microsoft-edge" {
+      // For Microsoft Edge, try to restore workspace by name
+      if let Some(workspace_name) = title {
+         if let Some(workspace_id) = get_edge_workspace_id(workspace_name) {
+            debug!("found Edge workspace ID for '{workspace_name}': {workspace_id}");
+            vec![
+               launch_command.to_owned(),
+               format!("--launch-workspace={}", workspace_id),
+            ]
+         } else {
+            debug!("no Edge workspace found for '{workspace_name}'");
             vec![launch_command.to_owned()]
          }
       } else {
