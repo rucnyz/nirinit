@@ -308,30 +308,40 @@ fn extract_jetbrains_project_path(title: &str) -> Option<String> {
    }
 }
 
-/// Extract tmux session name from kitty window title.
+/// Information extracted from a tmux window title
+struct TmuxInfo {
+   /// The hostname where tmux is running (could be local or remote)
+   hostname: String,
+   /// The tmux session name
+   session: String,
+}
+
+/// Extract hostname and tmux session name from kitty window title.
 ///
 /// When running tmux inside kitty, the window title follows the format set by oh-my-tmux:
 /// `hostname ❐ session_name ● window_index program_name`
 ///
-/// For example: "YuzhouArch ❐ main ● 1 claude"
-/// - `❐` (U+2750) marks the start of session name
-/// - `●` (U+25CF) marks the end of session name
+/// For example:
+/// - Local:  "YuzhouArch ❐ main ● 1 claude"
+/// - Remote: "surfi1 ❐ dt-agent ● 2 zsh"
+///
+/// The `❐` (U+2750) marks the boundary between hostname and session name.
+/// The `●` (U+25CF) marks the end of session name.
 ///
 /// # Arguments
 /// * `title` - The window title from niri IPC
 ///
 /// # Returns
-/// * `Some(session_name)` - The tmux session name (trimmed)
+/// * `Some(TmuxInfo)` - The hostname and tmux session name
 /// * `None` - If the title doesn't match the expected format
 ///
 /// # Example
 /// ```
-/// // Input:  "YuzhouArch ❐ main ● 1 claude"
-/// // Output: Some("main")
+/// // Input:  "surfi1 ❐ dt-agent ● 2 zsh"
+/// // Output: Some(TmuxInfo { hostname: "surfi1", session: "dt-agent" })
 /// ```
-fn extract_tmux_session_name(title: &str) -> Option<String> {
-   // Find the session name between ❐ and ●
-   // These are Unicode characters used by oh-my-tmux in the status line
+fn extract_tmux_info(title: &str) -> Option<TmuxInfo> {
+   // Find the markers: hostname ❐ session ● ...
    let start_marker = '❐';
    let end_marker = '●';
 
@@ -342,15 +352,29 @@ fn extract_tmux_session_name(title: &str) -> Option<String> {
       return None;
    }
 
-   // Extract and trim the session name
-   // +3 because ❐ is 3 bytes in UTF-8
-   let session_name = title[start + start_marker.len_utf8()..end].trim();
-
-   if session_name.is_empty() {
+   // Extract hostname (everything before ❐)
+   let hostname = title[..start].trim();
+   if hostname.is_empty() {
       return None;
    }
 
-   Some(session_name.to_string())
+   // Extract session name (between ❐ and ●)
+   let session = title[start + start_marker.len_utf8()..end].trim();
+   if session.is_empty() {
+      return None;
+   }
+
+   Some(TmuxInfo {
+      hostname: hostname.to_string(),
+      session: session.to_string(),
+   })
+}
+
+/// Get the local machine's hostname
+fn get_local_hostname() -> Option<String> {
+   std::fs::read_to_string("/etc/hostname")
+      .ok()
+      .map(|s| s.trim().to_string())
 }
 
 /// Get Microsoft Edge workspace ID from workspace name.
@@ -447,23 +471,47 @@ fn spawn_and_move_window<'niri>(
          vec![launch_command.to_owned()]
       }
    } else if app_id == "kitty" {
-      // Kitty terminal with tmux session
-      // When running tmux inside kitty with oh-my-tmux, the title format is:
-      // "hostname ❐ session_name ● window_index program_name"
-      // We extract the session name and attach to it directly
+      // Kitty terminal with tmux session (local or remote via SSH)
+      // Window title format: "hostname ❐ session_name ● window_index program_name"
+      //
+      // Examples:
+      // - Local:  "YuzhouArch ❐ main ● 1 zsh"     -> tmux attach -t main
+      // - Remote: "surfi1 ❐ dt-agent ● 2 zsh"    -> ssh surfi1 -t tmux attach -t dt-agent
       if let Some(title) = title {
-         if let Some(session_name) = extract_tmux_session_name(title) {
-            debug!("found tmux session name for kitty: {session_name}");
-            // Launch kitty and attach to the tmux session:
-            // `kitty -e tmux attach -t session_name`
-            vec![
-               launch_command.to_owned(),
-               "-e".to_owned(),
-               "tmux".to_owned(),
-               "attach".to_owned(),
-               "-t".to_owned(),
-               session_name,
-            ]
+         if let Some(tmux_info) = extract_tmux_info(title) {
+            let local_hostname = get_local_hostname();
+            let is_local = local_hostname
+               .as_ref()
+               .map(|h| h.eq_ignore_ascii_case(&tmux_info.hostname))
+               .unwrap_or(false);
+
+            if is_local {
+               // Local tmux session
+               debug!("found local tmux session: {}", tmux_info.session);
+               vec![
+                  launch_command.to_owned(),
+                  "-e".to_owned(),
+                  "tmux".to_owned(),
+                  "attach".to_owned(),
+                  "-t".to_owned(),
+                  tmux_info.session,
+               ]
+            } else {
+               // Remote tmux session via SSH
+               // Command: kitty -e ssh hostname -t tmux attach -t session
+               debug!(
+                  "found remote tmux session: {} on host {}",
+                  tmux_info.session, tmux_info.hostname
+               );
+               vec![
+                  launch_command.to_owned(),
+                  "-e".to_owned(),
+                  "ssh".to_owned(),
+                  tmux_info.hostname,
+                  "-t".to_owned(),
+                  format!("tmux attach -t {}", tmux_info.session),
+               ]
+            }
          } else {
             // No tmux session detected, just launch kitty normally
             vec![launch_command.to_owned()]
