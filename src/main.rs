@@ -57,7 +57,7 @@ use serde::{
    Serialize,
 };
 use signal_hook::{
-   consts::TERM_SIGNALS,
+   consts::{SIGUSR1, TERM_SIGNALS},
    flag,
 };
 use thiserror::Error;
@@ -804,20 +804,38 @@ fn main() -> eyre::Result<()> {
 
    let session_path = data_file()?;
    let term = Arc::new(AtomicBool::new(false));
+   let manual_save = Arc::new(AtomicBool::new(false));
 
+   // Register SIGTERM/SIGINT for graceful shutdown
    for sig in TERM_SIGNALS {
       flag::register(*sig, Arc::clone(&term))?;
    }
+
+   // Register SIGUSR1 for manual save trigger (e.g., via keybind: pkill -USR1 nirinit)
+   flag::register(SIGUSR1, Arc::clone(&manual_save))?;
 
    info!("starting nirinit-manager");
    restore_session(&config, &session_path)?;
 
    info!("starting periodic save (interval: {}s)", args.save_interval);
+   info!("send SIGUSR1 (pkill -USR1 nirinit) to trigger manual save");
    let mut last_save = Instant::now();
 
    while !term.load(Ordering::Relaxed) {
       thread::sleep(Duration::from_millis(100));
 
+      // Check for manual save signal (SIGUSR1)
+      if manual_save.swap(false, Ordering::Relaxed) {
+         info!("received SIGUSR1, saving session...");
+         if let Err(report) = save_session(&session_path, &config) {
+            error!("failed to save session: {report}");
+         } else {
+            info!("session saved successfully");
+         }
+         last_save = Instant::now();
+      }
+
+      // Periodic auto-save
       if last_save.elapsed() >= Duration::from_secs(args.save_interval) {
          if let Err(report) = save_session(&session_path, &config) {
             error!("failed to save session: {report}");
