@@ -465,21 +465,21 @@ fn spawn_and_move_window<'niri>(
       // Microsoft Edge with Workspaces feature
       // Window title IS the workspace name (e.g., "vllm", "work", "personal")
       // We look up the workspace ID from Edge's cache and launch with --launch-workspace
+      // Note: launch_command may contain args (e.g., "microsoft-edge-stable --force-device-scale-factor=1.1")
+      let mut cmd_parts: Vec<String> = launch_command.split_whitespace().map(String::from).collect();
       if let Some(workspace_name) = title {
          if let Some(workspace_id) = get_edge_workspace_id(workspace_name) {
             debug!("found Edge workspace ID for '{workspace_name}': {workspace_id}");
-            // Launch with workspace: `microsoft-edge-stable --launch-workspace=<uuid>`
-            vec![
-               launch_command.to_owned(),
-               format!("--launch-workspace={}", workspace_id),
-            ]
+            // Launch with workspace: `microsoft-edge-stable [args] --launch-workspace=<uuid>`
+            cmd_parts.push(format!("--launch-workspace={}", workspace_id));
+            cmd_parts
          } else {
             // Workspace not found in cache (maybe deleted or new profile)
             debug!("no Edge workspace found for '{workspace_name}'");
-            vec![launch_command.to_owned()]
+            cmd_parts
          }
       } else {
-         vec![launch_command.to_owned()]
+         cmd_parts
       }
    } else if app_id == "kitty" {
       // Kitty terminal with tmux session (local or remote via SSH)
@@ -514,7 +514,7 @@ fn spawn_and_move_window<'niri>(
                ]
             } else {
                // Remote tmux session via SSH
-               // Same logic but over SSH
+               // Retry SSH connection if DNS/network not ready yet
                debug!(
                   "found remote tmux session: {} on host {}",
                   tmux_info.session, tmux_info.hostname
@@ -522,13 +522,17 @@ fn spawn_and_move_window<'niri>(
                vec![
                   launch_command.to_owned(),
                   "-e".to_owned(),
-                  "ssh".to_owned(),
-                  tmux_info.hostname,
-                  "-t".to_owned(),
+                  "sh".to_owned(),
+                  "-c".to_owned(),
                   format!(
-                     "for i in $(seq 1 20); do tmux has-session -t {} 2>/dev/null && break; sleep 0.5; done; \
-                      tmux attach -t {} || tmux new-session \\; choose-tree -s",
-                     tmux_info.session, tmux_info.session
+                     "for retry in $(seq 1 10); do \
+                        ssh -t {} 'for i in $(seq 1 20); do tmux has-session -t {} 2>/dev/null && break; sleep 0.5; done; \
+                        tmux attach -t {} || tmux new-session \\; choose-tree -s' && exit 0; \
+                        echo \"SSH failed, retrying in 2s... (attempt $retry/10)\"; \
+                        sleep 2; \
+                      done; \
+                      echo \"SSH failed after 10 attempts\"; read -p \"Press Enter to close...\"",
+                     tmux_info.hostname, tmux_info.session, tmux_info.session
                   ),
                ]
             }
@@ -541,7 +545,8 @@ fn spawn_and_move_window<'niri>(
       }
    } else {
       // All other applications: just launch with the configured command
-      vec![launch_command.to_owned()]
+      // Split by whitespace in case launch_command contains args
+      launch_command.split_whitespace().map(String::from).collect()
    };
 
    let mut socket = Socket::connect().wrap_err("Failed to connect to Niri IPC socket")?;
@@ -562,17 +567,18 @@ fn spawn_and_move_window<'niri>(
       return Ok(());
    };
    debug!("spawn successful, waiting for window to appear...");
+   debug!(
+      "existing window IDs: {:?}, looking for app_id={}",
+      existing_window_ids, app_id
+   );
 
-   // Prioritize named workspaces
-   let workspace_reference = if let Some(name) = workspace_name {
-      WorkspaceReferenceArg::Name(name.to_owned())
-   } else if let Some(idx) = workspace_idx {
-      WorkspaceReferenceArg::Index(idx)
-   } else {
+   // Always use Index for workspace reference (Name doesn't work for unnamed workspaces)
+   let Some(idx) = workspace_idx else {
       return Ok(());
    };
+   let workspace_reference = WorkspaceReferenceArg::Index(idx);
 
-   for _ in 0..20 {
+   for attempt in 0..40 {
       thread::sleep(WINDOW_POLL_INTERVAL);
 
       let windows = niri_windows()?;
@@ -581,6 +587,11 @@ fn spawn_and_move_window<'niri>(
       let Some(new_window) = windows.iter().find(|w| {
          w.app_id.as_deref() == Some(app_id) && !existing_window_ids.contains(&w.id)
       }) else {
+         if attempt % 8 == 7 {
+            // Log every 2 seconds
+            let current_ids: Vec<_> = windows.iter().map(|w| (w.id, w.app_id.as_deref())).collect();
+            debug!("attempt {}: still waiting, current windows: {:?}", attempt + 1, current_ids);
+         }
          continue;
       };
 
@@ -615,6 +626,17 @@ fn spawn_and_move_window<'niri>(
          new_window.id,
          workspace_name.or(workspace_idx.map(|i| i.to_string()).as_deref())
       );
+
+      // Set workspace name AFTER moving window (workspace now exists)
+      if let Some(name) = workspace_name {
+         info!("setting workspace {} name to '{}'", idx, name);
+         if let Err(err) = socket.send(Request::Action(Action::SetWorkspaceName {
+            name:      name.to_owned(),
+            workspace: Some(WorkspaceReferenceArg::Index(idx)),
+         })) {
+            warn!("failed to set workspace name '{}': {}", name, err);
+         }
+      }
 
       // Handle vertical stacking within columns
       // If tile > 1, this window should be stacked below another window in the same column.
@@ -659,10 +681,23 @@ fn spawn_and_move_window<'niri>(
          }
       }
 
+      // Verify window still exists after all operations
+      thread::sleep(Duration::from_millis(500));
+      let windows_after = niri_windows()?;
+      if windows_after.iter().any(|w| w.id == new_window.id) {
+         debug!("window {} still exists after restore", new_window.id);
+      } else {
+         warn!(
+            "window {} ({}) disappeared immediately after restore!",
+            new_window.id,
+            new_window.app_id.as_deref().unwrap_or("unknown")
+         );
+      }
+
       return Ok(());
    }
 
-   warn!("window for `{launch_command}` did not appear within 5s");
+   warn!("window for `{launch_command}` did not appear within 10s");
 
    Ok(())
 }
@@ -703,31 +738,8 @@ fn restore_session(config: &Config, session_path: &Path) -> eyre::Result<()> {
    // restore sessions when the tmux server starts. The first kitty terminal will
    // start the tmux server, and continuum will handle the restoration.
 
-   // Collect workspace names (deduplicated) and set them BEFORE spawning windows.
-   // This ensures workspaces exist when we try to move windows to them by name.
-   let mut workspace_names_to_set: std::collections::HashMap<(Option<&str>, Option<u8>), &str> =
-      std::collections::HashMap::new();
-
-   for window in &sorted_windows {
-      if let Some(name) = window.workspace_name {
-         workspace_names_to_set.insert((window.workspace_output, window.workspace_idx), name);
-      }
-   }
-
-   // Set workspace names first to ensure they exist
-   let mut socket = Socket::connect().wrap_err("Failed to connect to Niri IPC socket")?;
-   for ((_output, idx), name) in &workspace_names_to_set {
-      if let Some(idx) = idx {
-         info!("creating/naming workspace: idx={}, name={}", idx, name);
-         if let Err(err) = socket.send(Request::Action(Action::SetWorkspaceName {
-            name: (*name).to_owned(),
-            workspace: Some(WorkspaceReferenceArg::Index(*idx)),
-         })) {
-            warn!("failed to set workspace name '{}': {}", name, err);
-         }
-      }
-   }
-   drop(socket);
+   // Workspace names are set AFTER moving windows (in spawn_and_move_window)
+   // because SetWorkspaceName doesn't create workspaces - it only names existing ones.
 
    for window in sorted_windows {
       // Check if the launch command should be skipped
