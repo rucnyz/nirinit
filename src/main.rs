@@ -487,21 +487,23 @@ fn spawn_and_move_window<'niri>(
 
             if is_local {
                // Local tmux session
-               // Use `new-session -A` to attach if exists, create if not
-               // This handles the case where tmux-resurrect hasn't restored yet
+               // Wait for session to exist (tmux-resurrect may still be restoring),
+               // then attach. If timeout, fall back to choose-tree.
                debug!("found local tmux session: {}", tmux_info.session);
                vec![
                   launch_command.to_owned(),
                   "-e".to_owned(),
-                  "tmux".to_owned(),
-                  "new-session".to_owned(),
-                  "-A".to_owned(),
-                  "-s".to_owned(),
-                  tmux_info.session,
+                  "sh".to_owned(),
+                  "-c".to_owned(),
+                  format!(
+                     "for i in $(seq 1 20); do tmux has-session -t {} 2>/dev/null && break; sleep 0.5; done; \
+                      tmux attach -t {} || tmux new-session \\; choose-tree -s",
+                     tmux_info.session, tmux_info.session
+                  ),
                ]
             } else {
                // Remote tmux session via SSH
-               // Use `new-session -A` for same reason
+               // Same logic but over SSH
                debug!(
                   "found remote tmux session: {} on host {}",
                   tmux_info.session, tmux_info.hostname
@@ -512,7 +514,11 @@ fn spawn_and_move_window<'niri>(
                   "ssh".to_owned(),
                   tmux_info.hostname,
                   "-t".to_owned(),
-                  format!("tmux new-session -A -s {}", tmux_info.session),
+                  format!(
+                     "for i in $(seq 1 20); do tmux has-session -t {} 2>/dev/null && break; sleep 0.5; done; \
+                      tmux attach -t {} || tmux new-session \\; choose-tree -s",
+                     tmux_info.session, tmux_info.session
+                  ),
                ]
             }
          } else {
