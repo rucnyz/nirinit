@@ -535,6 +535,12 @@ fn spawn_and_move_window<'niri>(
 
    let mut socket = Socket::connect().wrap_err("Failed to connect to Niri IPC socket")?;
 
+   // Record existing window IDs before spawning, so we can find the NEW window after spawn
+   let existing_window_ids: std::collections::HashSet<u64> = niri_windows()?
+      .iter()
+      .map(|w| w.id)
+      .collect();
+
    let reply = socket
       .send(Request::Action(Action::Spawn { command }))
       .map_err(NiriError::Send)?;
@@ -558,7 +564,10 @@ fn spawn_and_move_window<'niri>(
 
       let windows = niri_windows()?;
 
-      let Some(new_window) = windows.iter().find(|w| w.app_id.as_deref() == Some(app_id)) else {
+      // Find a NEW window with matching app_id (not in existing_window_ids)
+      let Some(new_window) = windows.iter().find(|w| {
+         w.app_id.as_deref() == Some(app_id) && !existing_window_ids.contains(&w.id)
+      }) else {
          continue;
       };
 
