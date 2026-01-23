@@ -308,6 +308,51 @@ fn extract_jetbrains_project_path(title: &str) -> Option<String> {
    }
 }
 
+/// Extract tmux session name from kitty window title.
+///
+/// When running tmux inside kitty, the window title follows the format set by oh-my-tmux:
+/// `hostname ❐ session_name ● window_index program_name`
+///
+/// For example: "YuzhouArch ❐ main ● 1 claude"
+/// - `❐` (U+2750) marks the start of session name
+/// - `●` (U+25CF) marks the end of session name
+///
+/// # Arguments
+/// * `title` - The window title from niri IPC
+///
+/// # Returns
+/// * `Some(session_name)` - The tmux session name (trimmed)
+/// * `None` - If the title doesn't match the expected format
+///
+/// # Example
+/// ```
+/// // Input:  "YuzhouArch ❐ main ● 1 claude"
+/// // Output: Some("main")
+/// ```
+fn extract_tmux_session_name(title: &str) -> Option<String> {
+   // Find the session name between ❐ and ●
+   // These are Unicode characters used by oh-my-tmux in the status line
+   let start_marker = '❐';
+   let end_marker = '●';
+
+   let start = title.find(start_marker)?;
+   let end = title.find(end_marker)?;
+
+   if start >= end {
+      return None;
+   }
+
+   // Extract and trim the session name
+   // +3 because ❐ is 3 bytes in UTF-8
+   let session_name = title[start + start_marker.len_utf8()..end].trim();
+
+   if session_name.is_empty() {
+      return None;
+   }
+
+   Some(session_name.to_string())
+}
+
 /// Get Microsoft Edge workspace ID from workspace name.
 ///
 /// Edge stores workspace information in a JSON cache file at:
@@ -396,6 +441,31 @@ fn spawn_and_move_window<'niri>(
          } else {
             // Workspace not found in cache (maybe deleted or new profile)
             debug!("no Edge workspace found for '{workspace_name}'");
+            vec![launch_command.to_owned()]
+         }
+      } else {
+         vec![launch_command.to_owned()]
+      }
+   } else if app_id == "kitty" {
+      // Kitty terminal with tmux session
+      // When running tmux inside kitty with oh-my-tmux, the title format is:
+      // "hostname ❐ session_name ● window_index program_name"
+      // We extract the session name and attach to it directly
+      if let Some(title) = title {
+         if let Some(session_name) = extract_tmux_session_name(title) {
+            debug!("found tmux session name for kitty: {session_name}");
+            // Launch kitty and attach to the tmux session:
+            // `kitty -e tmux attach -t session_name`
+            vec![
+               launch_command.to_owned(),
+               "-e".to_owned(),
+               "tmux".to_owned(),
+               "attach".to_owned(),
+               "-t".to_owned(),
+               session_name,
+            ]
+         } else {
+            // No tmux session detected, just launch kitty normally
             vec![launch_command.to_owned()]
          }
       } else {
