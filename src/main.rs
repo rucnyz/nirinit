@@ -698,41 +698,42 @@ fn restore_session(config: &Config, session_path: &Path) -> eyre::Result<()> {
       (w.workspace_output, w.workspace_idx, col, tile)
    });
 
-   // Pre-create tmux sessions for kitty windows BEFORE spawning them.
-   // This ensures the sessions exist when kitty tries to attach.
-   // We extract session names from the saved kitty window titles.
-   let local_hostname = get_local_hostname();
-   let mut tmux_sessions_to_create: std::collections::HashSet<String> =
-      std::collections::HashSet::new();
+   // Trigger tmux-resurrect restore BEFORE spawning kitty terminals.
+   // This ensures tmux sessions exist when kitty tries to attach to them.
+   // The resurrect script restores all saved sessions with their original names.
+   let resurrect_script = dirs::home_dir()
+      .map(|h| h.join(".tmux/plugins/tmux-resurrect/scripts/restore.sh"));
+   if let Some(ref script) = resurrect_script {
+      if script.exists() {
+         info!("triggering tmux-resurrect restore...");
+         // Add ~/.local/bin to PATH for the hostname command (needed by resurrect script)
+         let home = dirs::home_dir().unwrap_or_default();
+         let local_bin = home.join(".local/bin");
+         let current_path = std::env::var("PATH").unwrap_or_default();
+         let new_path = format!("{}:{}", local_bin.display(), current_path);
 
-   for window in &sorted_windows {
-      if window.app_id.as_deref() == Some("kitty") {
-         if let Some(ref title) = window.title {
-            if let Some(tmux_info) = extract_tmux_info(title) {
-               // Only create sessions for local tmux (not remote SSH)
-               let is_local = local_hostname
-                  .as_ref()
-                  .map(|h| h.eq_ignore_ascii_case(&tmux_info.hostname))
-                  .unwrap_or(false);
-               if is_local {
-                  tmux_sessions_to_create.insert(tmux_info.session);
-               }
-            }
+         match std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+               "tmux start-server && {}",
+               script.display()
+            ))
+            .env("PATH", &new_path)
+            .status()
+         {
+            Ok(status) if status.success() => {
+               info!("tmux sessions restored successfully");
+               // Give tmux a moment to fully initialize sessions
+               thread::sleep(Duration::from_millis(500));
+            },
+            Ok(status) => {
+               warn!("tmux-resurrect restore exited with status: {}", status);
+            },
+            Err(err) => {
+               warn!("failed to run tmux-resurrect restore: {}", err);
+            },
          }
       }
-   }
-
-   // Create the tmux sessions
-   if !tmux_sessions_to_create.is_empty() {
-      info!("pre-creating {} tmux sessions...", tmux_sessions_to_create.len());
-      for session_name in &tmux_sessions_to_create {
-         debug!("creating tmux session: {}", session_name);
-         let _ = std::process::Command::new("tmux")
-            .args(["new-session", "-d", "-s", session_name])
-            .status();
-      }
-      // Give tmux a moment to initialize
-      thread::sleep(Duration::from_millis(200));
    }
 
    // Collect workspace names (deduplicated) and set them BEFORE spawning windows.
