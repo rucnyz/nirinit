@@ -266,17 +266,40 @@ fn save_session(file_path: &Path, config: &Config) -> eyre::Result<()> {
    Ok(())
 }
 
-/// Extract project path from JetBrains IDE window title
-/// Title format: "project_name [/path/to/project] – filename" or "project_name [~/path/to/project] – filename"
+/// Extract project path from JetBrains IDE window title.
+///
+/// JetBrains IDEs (PyCharm, IntelliJ, etc.) display the project path in the window title
+/// in the format: "project_name [/path/to/project] – current_file.ext"
+///
+/// This function extracts the path between square brackets and expands `~` to the home directory.
+///
+/// # Arguments
+/// * `title` - The window title from niri IPC
+///
+/// # Returns
+/// * `Some(path)` - The expanded absolute path to the project
+/// * `None` - If the title doesn't contain a valid path in brackets
+///
+/// # Example
+/// ```
+/// // Input:  "camel [~/projects/camel] – main.py"
+/// // Output: Some("/home/user/projects/camel")
+/// ```
 fn extract_jetbrains_project_path(title: &str) -> Option<String> {
-   // Find the path between square brackets
+   // Find the path between square brackets: [path]
    let start = title.find('[')?;
    let end = title.find(']')?;
+
+   // Sanity check: start must be before end
    if start >= end {
       return None;
    }
+
+   // Extract the path (excluding the brackets themselves)
    let path = &title[start + 1..end];
-   // Expand ~ to home directory
+
+   // Expand ~ to the user's home directory
+   // e.g., "~/projects" -> "/home/username/projects"
    if path.starts_with('~') {
       dirs::home_dir()
          .map(|home| path.replacen('~', home.to_str().unwrap_or(""), 1))
@@ -285,14 +308,40 @@ fn extract_jetbrains_project_path(title: &str) -> Option<String> {
    }
 }
 
-/// Get Edge workspace ID from workspace name by reading the WorkspacesCache file
+/// Get Microsoft Edge workspace ID from workspace name.
+///
+/// Edge stores workspace information in a JSON cache file at:
+/// `~/.config/microsoft-edge/Default/Workspaces/WorkspacesCache`
+///
+/// The window title of an Edge workspace window is the workspace name itself,
+/// so we can use it to look up the corresponding workspace ID.
+///
+/// Edge can then be launched with `--launch-workspace=<ID>` to open that workspace.
+///
+/// # Arguments
+/// * `workspace_name` - The workspace name (from window title)
+///
+/// # Returns
+/// * `Some(id)` - The UUID of the workspace
+/// * `None` - If the cache file doesn't exist or workspace not found
+///
+/// # Example
+/// ```
+/// // Workspace name: "vllm"
+/// // Returns: Some("bbb831b3-9481-4fa9-872e-2b7344417362")
+/// ```
 fn get_edge_workspace_id(workspace_name: &str) -> Option<String> {
+   // Build path to Edge's workspace cache file
+   // Location: ~/.config/microsoft-edge/Default/Workspaces/WorkspacesCache
    let cache_path = dirs::config_dir()?
       .join("microsoft-edge/Default/Workspaces/WorkspacesCache");
 
+   // Read and parse the JSON cache file
    let cache_content = fs::read_to_string(&cache_path).ok()?;
    let cache: serde_json::Value = serde_json::from_str(&cache_content).ok()?;
 
+   // Search for a workspace with matching name and return its ID
+   // Cache structure: { "workspaces": [{ "name": "...", "id": "..." }, ...] }
    cache["workspaces"]
       .as_array()?
       .iter()
@@ -310,29 +359,42 @@ fn spawn_and_move_window<'niri>(
    workspace_output: Option<&'niri str>,
    window_size: Option<(i32, i32)>,
 ) -> eyre::Result<()> {
-   // Build command based on app type
+   // Build the launch command with app-specific arguments.
+   //
+   // Different applications need different handling to restore their state:
+   // - JetBrains IDEs: Pass project path as argument (e.g., `pycharm /path/to/project`)
+   // - Microsoft Edge: Pass workspace ID (e.g., `edge --launch-workspace=<uuid>`)
+   // - Other apps: Just launch without special arguments
    let command = if app_id.starts_with("jetbrains-") {
-      // For JetBrains IDEs, try to extract project path from title
+      // JetBrains IDEs (PyCharm, IntelliJ, WebStorm, etc.)
+      // Window title format: "project_name [/path/to/project] – filename"
+      // We extract the path and pass it as an argument to open the correct project
       if let Some(title) = title {
          if let Some(project_path) = extract_jetbrains_project_path(title) {
             debug!("extracted project path for {app_id}: {project_path}");
+            // Launch with project path: `pycharm /home/user/projects/myproject`
             vec![launch_command.to_owned(), project_path]
          } else {
+            // Fallback: launch without project path (will open last project or welcome screen)
             vec![launch_command.to_owned()]
          }
       } else {
          vec![launch_command.to_owned()]
       }
    } else if app_id == "microsoft-edge" {
-      // For Microsoft Edge, try to restore workspace by name
+      // Microsoft Edge with Workspaces feature
+      // Window title IS the workspace name (e.g., "vllm", "work", "personal")
+      // We look up the workspace ID from Edge's cache and launch with --launch-workspace
       if let Some(workspace_name) = title {
          if let Some(workspace_id) = get_edge_workspace_id(workspace_name) {
             debug!("found Edge workspace ID for '{workspace_name}': {workspace_id}");
+            // Launch with workspace: `microsoft-edge-stable --launch-workspace=<uuid>`
             vec![
                launch_command.to_owned(),
                format!("--launch-workspace={}", workspace_id),
             ]
          } else {
+            // Workspace not found in cache (maybe deleted or new profile)
             debug!("no Edge workspace found for '{workspace_name}'");
             vec![launch_command.to_owned()]
          }
@@ -340,6 +402,7 @@ fn spawn_and_move_window<'niri>(
          vec![launch_command.to_owned()]
       }
    } else {
+      // All other applications: just launch with the configured command
       vec![launch_command.to_owned()]
    };
 
