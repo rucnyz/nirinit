@@ -698,16 +698,31 @@ fn restore_session(config: &Config, session_path: &Path) -> eyre::Result<()> {
       (w.workspace_output, w.workspace_idx, col, tile)
    });
 
-   // Track workspace names we need to set (deduplicated)
+   // Collect workspace names (deduplicated) and set them BEFORE spawning windows.
+   // This ensures workspaces exist when we try to move windows to them by name.
    let mut workspace_names_to_set: std::collections::HashMap<(Option<&str>, Option<u8>), &str> =
       std::collections::HashMap::new();
 
    for window in &sorted_windows {
-      // Collect workspace names to set later
       if let Some(name) = window.workspace_name {
          workspace_names_to_set.insert((window.workspace_output, window.workspace_idx), name);
       }
    }
+
+   // Set workspace names first to ensure they exist
+   let mut socket = Socket::connect().wrap_err("Failed to connect to Niri IPC socket")?;
+   for ((_output, idx), name) in &workspace_names_to_set {
+      if let Some(idx) = idx {
+         info!("creating/naming workspace: idx={}, name={}", idx, name);
+         if let Err(err) = socket.send(Request::Action(Action::SetWorkspaceName {
+            name: (*name).to_owned(),
+            workspace: Some(WorkspaceReferenceArg::Index(*idx)),
+         })) {
+            warn!("failed to set workspace name '{}': {}", name, err);
+         }
+      }
+   }
+   drop(socket);
 
    for window in sorted_windows {
       // Check if the launch command should be skipped
@@ -729,25 +744,6 @@ fn restore_session(config: &Config, session_path: &Path) -> eyre::Result<()> {
                window.layout_position,
             )?;
          }
-      }
-   }
-
-   // Set workspace names after all windows are placed
-   // This ensures workspaces exist before we try to name them
-   let mut socket = Socket::connect().wrap_err("Failed to connect to Niri IPC socket")?;
-   for ((output, idx), name) in workspace_names_to_set {
-      let workspace_ref = if let Some(idx) = idx {
-         WorkspaceReferenceArg::Index(idx)
-      } else {
-         continue;
-      };
-
-      info!("setting workspace name: idx={:?}, output={:?}, name={}", idx, output, name);
-      if let Err(err) = socket.send(Request::Action(Action::SetWorkspaceName {
-         name: name.to_owned(),
-         workspace: Some(workspace_ref),
-      })) {
-         warn!("failed to set workspace name '{}': {}", name, err);
       }
    }
 
