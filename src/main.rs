@@ -104,6 +104,11 @@ struct SessionWindow<'niri> {
    /// TODO: Remove [`Option`] in a month
    #[serde(default)]
    window_size:      Option<(i32, i32)>,
+   /// Position in the scrolling layout: (column index, tile index within column)
+   /// Column index starts from 1 (leftmost), tile index starts from 1 (topmost)
+   /// Used to restore the exact layout including vertical stacking within columns
+   #[serde(default)]
+   layout_position:  Option<(usize, usize)>,
 }
 
 #[derive(Default, Deserialize)]
@@ -253,6 +258,7 @@ fn save_session(file_path: &Path, config: &Config) -> eyre::Result<()> {
             workspace_output: workspace.and_then(|w| w.output.as_deref()),
             is_focused: window.is_focused,
             window_size: Some(window.layout.window_size),
+            layout_position: window.layout.pos_in_scrolling_layout,
          }
       })
       .collect::<Vec<_>>();
@@ -427,7 +433,12 @@ fn spawn_and_move_window<'niri>(
    workspace_name: Option<&'niri str>,
    workspace_output: Option<&'niri str>,
    window_size: Option<(i32, i32)>,
+   layout_position: Option<(usize, usize)>,
 ) -> eyre::Result<()> {
+   info!(
+      "restoring window: app_id={}, workspace_name={:?}, workspace_idx={:?}, output={:?}, layout_pos={:?}",
+      app_id, workspace_name, workspace_idx, workspace_output, layout_position
+   );
    // Build the launch command with app-specific arguments.
    //
    // Different applications need different handling to restore their state:
@@ -541,6 +552,7 @@ fn spawn_and_move_window<'niri>(
       .map(|w| w.id)
       .collect();
 
+   debug!("spawning command: {:?}", command);
    let reply = socket
       .send(Request::Action(Action::Spawn { command }))
       .map_err(NiriError::Send)?;
@@ -549,6 +561,7 @@ fn spawn_and_move_window<'niri>(
       error!("failed to spawn command `{launch_command}`");
       return Ok(());
    };
+   debug!("spawn successful, waiting for window to appear...");
 
    // Prioritize named workspaces
    let workspace_reference = if let Some(name) = workspace_name {
@@ -597,6 +610,33 @@ fn spawn_and_move_window<'niri>(
          .map_err(NiriError::Send)?
          .map_err(NiriError::Reply)?;
 
+      debug!(
+         "moved window {} to workspace {:?}",
+         new_window.id,
+         workspace_name.or(workspace_idx.map(|i| i.to_string()).as_deref())
+      );
+
+      // Handle vertical stacking within columns
+      // If tile > 1, this window should be stacked below another window in the same column.
+      // We consume it into the column to the left (which contains the previous tile).
+      if let Some((col, tile)) = layout_position {
+         if tile > 1 {
+            debug!(
+               "window {} is at tile {} in column {}, consuming into column to the left",
+               new_window.id, tile, col
+            );
+            // ConsumeOrExpelWindowLeft will merge this window into the column to its left
+            if let Err(err) = socket.send(Request::Action(Action::ConsumeOrExpelWindowLeft {
+               id: Some(new_window.id),
+            })) {
+               warn!(
+                  "failed to consume window {} into column: {}",
+                  new_window.id, err
+               );
+            }
+         }
+      }
+
       if let Some((width, height)) = window_size {
          if let Err(err) = socket.send(Request::Action(Action::SetWindowWidth {
             id:     Some(new_window.id),
@@ -644,26 +684,36 @@ fn restore_session(config: &Config, session_path: &Path) -> eyre::Result<()> {
    let windows = serde_json::from_str::<Vec<SessionWindow>>(&session_data)
       .wrap_err("Failed to load session data")?;
 
-   // Add original index to each window for preserving order within workspaces.
-   // The session file stores windows in their visual order (left-to-right in niri),
-   // so we need to maintain this order when restoring.
-   let mut indexed_windows: Vec<(usize, SessionWindow)> = windows
-      .into_iter()
-      .enumerate()
-      .collect();
+   info!("loaded {} windows from session file", windows.len());
 
-   // Sort windows by (workspace_output, workspace_idx, original_index).
+   // Sort windows by (workspace_output, workspace_idx, column, tile).
    // This ensures:
-   // 1. Workspaces on lower-indexed outputs are created first
+   // 1. Workspaces on earlier outputs are processed first
    // 2. Lower-indexed workspaces are created first
-   // 3. Windows within each workspace maintain their original left-to-right order
-   indexed_windows.sort_by_key(|(idx, w)| (w.workspace_output, w.workspace_idx, *idx));
+   // 3. Windows are spawned left-to-right (by column)
+   // 4. Within each column, windows are spawned top-to-bottom (by tile)
+   let mut sorted_windows = windows;
+   sorted_windows.sort_by_key(|w| {
+      let (col, tile) = w.layout_position.unwrap_or((usize::MAX, usize::MAX));
+      (w.workspace_output, w.workspace_idx, col, tile)
+   });
 
-   for (_original_idx, window) in indexed_windows {
+   // Track workspace names we need to set (deduplicated)
+   let mut workspace_names_to_set: std::collections::HashMap<(Option<&str>, Option<u8>), &str> =
+      std::collections::HashMap::new();
+
+   for window in &sorted_windows {
+      // Collect workspace names to set later
+      if let Some(name) = window.workspace_name {
+         workspace_names_to_set.insert((window.workspace_output, window.workspace_idx), name);
+      }
+   }
+
+   for window in sorted_windows {
       // Check if the launch command should be skipped
       if let Some(ref launch_command) = window.launch_command {
          if config.skip.apps.contains(launch_command) {
-            info!("skipping command: {launch_command}");
+            info!("skipping app: {launch_command}");
             continue;
          }
 
@@ -676,8 +726,28 @@ fn restore_session(config: &Config, session_path: &Path) -> eyre::Result<()> {
                window.workspace_name,
                window.workspace_output,
                window.window_size,
+               window.layout_position,
             )?;
          }
+      }
+   }
+
+   // Set workspace names after all windows are placed
+   // This ensures workspaces exist before we try to name them
+   let mut socket = Socket::connect().wrap_err("Failed to connect to Niri IPC socket")?;
+   for ((output, idx), name) in workspace_names_to_set {
+      let workspace_ref = if let Some(idx) = idx {
+         WorkspaceReferenceArg::Index(idx)
+      } else {
+         continue;
+      };
+
+      info!("setting workspace name: idx={:?}, output={:?}, name={}", idx, output, name);
+      if let Err(err) = socket.send(Request::Action(Action::SetWorkspaceName {
+         name: name.to_owned(),
+         workspace: Some(workspace_ref),
+      })) {
+         warn!("failed to set workspace name '{}': {}", name, err);
       }
    }
 
