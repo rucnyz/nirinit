@@ -703,15 +703,22 @@ fn restore_session(config: &Config, session_path: &Path) -> eyre::Result<()> {
    // The resurrect script restores all saved sessions with their original names.
    let resurrect_script = dirs::home_dir()
       .map(|h| h.join(".tmux/plugins/tmux-resurrect/scripts/restore.sh"));
-   if let Some(script) = resurrect_script {
+   if let Some(ref script) = resurrect_script {
       if script.exists() {
          info!("triggering tmux-resurrect restore...");
+         // Add ~/.local/bin to PATH for the hostname command (needed by resurrect script)
+         let home = dirs::home_dir().unwrap_or_default();
+         let local_bin = home.join(".local/bin");
+         let current_path = std::env::var("PATH").unwrap_or_default();
+         let new_path = format!("{}:{}", local_bin.display(), current_path);
+
          match std::process::Command::new("sh")
             .arg("-c")
             .arg(format!(
-               "tmux start-server && {} 2>/dev/null",
+               "tmux start-server && {}",
                script.display()
             ))
+            .env("PATH", &new_path)
             .status()
          {
             Ok(status) if status.success() => {
